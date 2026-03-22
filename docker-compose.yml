@@ -1,0 +1,11 @@
+services:
+  weather:
+    image: fpcloud/weather:latest
+    build:
+      context: .
+    container_name: weather
+    ports:
+      - "8000:8000"
+    volumes:
+      - /Users/rustamkrikbayev/Documents/projects/forecast/config.conf:/app/config.conf:ro
+    restart: unless-stopped
