@@ -50,6 +50,15 @@ Or via JSON config file (default: `config.conf` in the working directory):
     },
     "OPENMETEO": {
       "base_url": "https://api.open-meteo.com/v1/forecast"
+    },
+    "TOMORROWIO": {
+      "api_key": "your_key",
+      "base_url": "https://api.tomorrow.io/v4/weather/realtime",
+      "forecast_base_url": "https://api.tomorrow.io/v4/weather/forecast"
+    },
+    "VISUALCROSSING": {
+      "api_key": "your_key",
+      "base_url": "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
     }
   }
 }
@@ -67,6 +76,9 @@ Optional base URLs:
 export OPENWEATHER_BASE_URL=...
 export WEATHERAPI_BASE_URL=...
 export OPENMETEO_BASE_URL=...
+export TOMORROWIO_BASE_URL=...
+export TOMORROWIO_FORECAST_BASE_URL=...
+export VISUALCROSSING_BASE_URL=...
 ```
 
 Circuit breaker and cache tuning:

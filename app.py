@@ -19,7 +19,7 @@ FAIL_WINDOW_SECONDS = int(os.getenv("FAIL_WINDOW_SECONDS", "60"))
 FAIL_THRESHOLD = int(os.getenv("FAIL_THRESHOLD", "3"))
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "300"))
 
-DEFAULT_PROVIDERS = ["openweather", "weatherapi", "openmeteo", "mock"]
+DEFAULT_PROVIDERS = ["openweather", "weatherapi", "openmeteo", "tomorrowio", "visualcrossing", "mock"]
 PROVIDERS = [p.strip() for p in os.getenv("PROVIDERS", ",".join(DEFAULT_PROVIDERS)).split(",") if p.strip()]
 
 # -------------------------
@@ -194,6 +194,54 @@ def _fetch_openmeteo(lat: float, lon: float, units: str) -> Dict[str, Any]:
     return resp.json()
 
 
+def _fetch_tomorrowio(lat: float, lon: float, units: str) -> Dict[str, Any]:
+    base_url = os.getenv("TOMORROWIO_BASE_URL") or _get_config_value("TOMORROWIO_BASE_URL") or "https://api.tomorrow.io/v4/weather/realtime"
+    cfg = _get_provider_config("TOMORROWIO") or _get_provider_config("TOMORROW")
+    api_key = (
+        os.getenv("TOMORROW_API_KEY")
+        or os.getenv("TOMORROWIO_API_KEY")
+        or _get_config_value("TOMORROW_API_KEY")
+        or _get_config_value("TOMORROWIO_API_KEY")
+        or (str(cfg.get("api_key")) if cfg.get("api_key") is not None else None)
+    )
+    if not api_key:
+        raise RuntimeError("TOMORROW_API_KEY is not set")
+    params = {
+        "location": f"{lat},{lon}",
+        "apikey": api_key,
+    }
+    resp = requests.get(base_url, params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _fetch_visualcrossing(lat: float, lon: float, units: str) -> Dict[str, Any]:
+    cfg = _get_provider_config("VISUALCROSSING")
+    api_key = (
+        os.getenv("VISUALCROSSING_API_KEY")
+        or _get_config_value("VISUALCROSSING_API_KEY")
+        or (str(cfg.get("api_key")) if cfg.get("api_key") is not None else None)
+    )
+    if not api_key:
+        raise RuntimeError("VISUALCROSSING_API_KEY is not set")
+    base_url = (
+        os.getenv("VISUALCROSSING_BASE_URL")
+        or _get_config_value("VISUALCROSSING_BASE_URL")
+        or (str(cfg.get("base_url")) if cfg.get("base_url") is not None else None)
+        or "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+    )
+    unit_group = "metric" if units == "metric" else "us"
+    url = f"{base_url}/{lat},{lon}"
+    params = {
+        "key": api_key,
+        "unitGroup": unit_group,
+        "include": "current",
+    }
+    resp = requests.get(url, params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _fetch_openmeteo_forecast(lat: float, lon: float, units: str, hours: int) -> Dict[str, Any]:
     om_cfg = _get_provider_config("OPENMETEO")
     base_url = (
@@ -234,6 +282,59 @@ def _fetch_weatherapi_forecast(lat: float, lon: float, units: str, hours: int) -
     q = f"{lat},{lon}"
     params = {"key": api_key, "q": q, "days": 1, "aqi": "no", "alerts": "no"}
     resp = requests.get(base_url, params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _fetch_tomorrowio_forecast(lat: float, lon: float, units: str, hours: int) -> Dict[str, Any]:
+    base_url = (
+        os.getenv("TOMORROWIO_FORECAST_BASE_URL")
+        or _get_config_value("TOMORROWIO_FORECAST_BASE_URL")
+        or (str(cfg.get("forecast_base_url")) if cfg.get("forecast_base_url") is not None else None)
+        or "https://api.tomorrow.io/v4/weather/forecast"
+    )
+    cfg = _get_provider_config("TOMORROWIO") or _get_provider_config("TOMORROW")
+    api_key = (
+        os.getenv("TOMORROW_API_KEY")
+        or os.getenv("TOMORROWIO_API_KEY")
+        or _get_config_value("TOMORROW_API_KEY")
+        or _get_config_value("TOMORROWIO_API_KEY")
+        or (str(cfg.get("api_key")) if cfg.get("api_key") is not None else None)
+    )
+    if not api_key:
+        raise RuntimeError("TOMORROW_API_KEY is not set")
+    params = {
+        "location": f"{lat},{lon}",
+        "apikey": api_key,
+    }
+    resp = requests.get(base_url, params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _fetch_visualcrossing_forecast(lat: float, lon: float, units: str, hours: int) -> Dict[str, Any]:
+    cfg = _get_provider_config("VISUALCROSSING")
+    api_key = (
+        os.getenv("VISUALCROSSING_API_KEY")
+        or _get_config_value("VISUALCROSSING_API_KEY")
+        or (str(cfg.get("api_key")) if cfg.get("api_key") is not None else None)
+    )
+    if not api_key:
+        raise RuntimeError("VISUALCROSSING_API_KEY is not set")
+    base_url = (
+        os.getenv("VISUALCROSSING_BASE_URL")
+        or _get_config_value("VISUALCROSSING_BASE_URL")
+        or (str(cfg.get("base_url")) if cfg.get("base_url") is not None else None)
+        or "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+    )
+    unit_group = "metric" if units == "metric" else "us"
+    url = f"{base_url}/{lat},{lon}"
+    params = {
+        "key": api_key,
+        "unitGroup": unit_group,
+        "include": "hours",
+    }
+    resp = requests.get(url, params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -393,6 +494,70 @@ def _transform_openmeteo(raw: Dict[str, Any], lat: float, lon: float, units: str
     return _to_cws("openmeteo", lat, lon, current, risk)
 
 
+def _transform_tomorrowio(raw: Dict[str, Any], lat: float, lon: float, units: str) -> Dict[str, Any]:
+    data = raw.get("data", {})
+    values = data.get("values", {})
+    temp_c = values.get("temperature")
+    feels_c = values.get("temperatureApparent")
+
+    wind_speed = values.get("windSpeed")
+    wind_gust = values.get("windGust")
+    if wind_speed is not None:
+        wind_speed = wind_speed * 3.6
+    if wind_gust is not None:
+        wind_gust = wind_gust * 3.6
+
+    if units == "imperial":
+        if temp_c is not None:
+            temp_c = (temp_c * 9 / 5) + 32
+        if feels_c is not None:
+            feels_c = (feels_c * 9 / 5) + 32
+        if wind_speed is not None:
+            wind_speed = wind_speed / 1.60934
+        if wind_gust is not None:
+            wind_gust = wind_gust / 1.60934
+
+    current = {
+        "temp_c": temp_c,
+        "feels_like_c": feels_c,
+        "condition": {"text": str(values.get("weatherCode")) if values.get("weatherCode") is not None else "", "icon_url": ""},
+        "wind": {
+            "speed_kph": wind_speed,
+            "direction": values.get("windDirection"),
+            "gust_kph": wind_gust,
+        },
+    }
+    risk = {
+        "uv_index": values.get("uvIndex"),
+        "precip_prob": values.get("precipitationProbability"),
+        "thunderstorm_prob": None,
+    }
+    return _to_cws("tomorrowio", lat, lon, current, risk)
+
+
+def _transform_visualcrossing(raw: Dict[str, Any], lat: float, lon: float, units: str) -> Dict[str, Any]:
+    current_raw = raw.get("currentConditions", {}) or {}
+    current = {
+        "temp_c": current_raw.get("temp"),
+        "feels_like_c": current_raw.get("feelslike"),
+        "condition": {
+            "text": current_raw.get("conditions") or "",
+            "icon_url": current_raw.get("icon") or "",
+        },
+        "wind": {
+            "speed_kph": current_raw.get("windspeed"),
+            "direction": current_raw.get("winddir"),
+            "gust_kph": current_raw.get("windgust"),
+        },
+    }
+    risk = {
+        "uv_index": current_raw.get("uvindex"),
+        "precip_prob": current_raw.get("precipprob"),
+        "thunderstorm_prob": None,
+    }
+    return _to_cws("visualcrossing", lat, lon, current, risk)
+
+
 def _transform_mock(raw: Dict[str, Any], lat: float, lon: float, units: str) -> Dict[str, Any]:
     return _to_cws("mock", lat, lon, raw["current"], raw["risk_factors"])
 
@@ -401,6 +566,8 @@ FETCHERS: Dict[str, Callable[[float, float, str], Dict[str, Any]]] = {
     "openweather": _fetch_openweather,
     "weatherapi": _fetch_weatherapi,
     "openmeteo": _fetch_openmeteo,
+    "tomorrowio": _fetch_tomorrowio,
+    "visualcrossing": _fetch_visualcrossing,
     "mock": _fetch_mock,
 }
 
@@ -408,18 +575,31 @@ TRANSFORMERS: Dict[str, Callable[[Dict[str, Any], float, float, str], Dict[str, 
     "openweather": _transform_openweather,
     "weatherapi": _transform_weatherapi,
     "openmeteo": _transform_openmeteo,
+    "tomorrowio": _transform_tomorrowio,
+    "visualcrossing": _transform_visualcrossing,
     "mock": _transform_mock,
+}
+
+PROVIDER_KEY_ENV: Dict[str, List[str]] = {
+    "openweather": ["OPENWEATHER_API_KEY"],
+    "weatherapi": ["WEATHERAPI_API_KEY"],
+    "openmeteo": [],
+    "tomorrowio": ["TOMORROW_API_KEY", "TOMORROWIO_API_KEY"],
+    "visualcrossing": ["VISUALCROSSING_API_KEY"],
+    "mock": [],
 }
 
 FORECAST_PROVIDERS = [
     p.strip()
-    for p in os.getenv("FORECAST_PROVIDERS", "openmeteo,weatherapi,mock").split(",")
+    for p in os.getenv("FORECAST_PROVIDERS", "openmeteo,weatherapi,tomorrowio,visualcrossing,mock").split(",")
     if p.strip()
 ]
 
 FORECAST_FETCHERS: Dict[str, Callable[[float, float, str, int], Dict[str, Any]]] = {
     "openmeteo": _fetch_openmeteo_forecast,
     "weatherapi": _fetch_weatherapi_forecast,
+    "tomorrowio": _fetch_tomorrowio_forecast,
+    "visualcrossing": _fetch_visualcrossing_forecast,
 }
 
 
@@ -527,6 +707,107 @@ def _transform_weatherapi_forecast(raw: Dict[str, Any], lat: float, lon: float, 
     return _to_forecast_response("weatherapi", lat, lon, rows)
 
 
+def _transform_tomorrowio_forecast(raw: Dict[str, Any], lat: float, lon: float, units: str, hours: int) -> Dict[str, Any]:
+    timelines = (raw.get("timelines") or raw.get("data", {}).get("timelines") or [])
+    if not timelines:
+        raise RuntimeError("Tomorrow.io forecast response missing timelines")
+    intervals = timelines[0].get("intervals") or []
+
+    rows: List[Dict[str, Any]] = []
+    count = min(hours, len(intervals))
+    for idx in range(count):
+        interval = intervals[idx]
+        values = interval.get("values", {})
+
+        temp_out = values.get("temperature")
+        wind_speed = values.get("windSpeed")
+        wind_gust = values.get("windGust")
+        vis_out = values.get("visibility")
+        pressure_out = values.get("pressureSurfaceLevel")
+
+        if wind_speed is not None:
+            wind_speed = wind_speed * 3.6
+        if wind_gust is not None:
+            wind_gust = wind_gust * 3.6
+
+        if units == "imperial":
+            if temp_out is not None:
+                temp_out = (temp_out * 9 / 5) + 32
+            if wind_speed is not None:
+                wind_speed = wind_speed / 1.60934
+            if wind_gust is not None:
+                wind_gust = wind_gust / 1.60934
+            if vis_out is not None:
+                vis_out = vis_out / 1.60934
+            if pressure_out is not None:
+                pressure_out = pressure_out * 0.02953
+
+        rows.append(
+            {
+                "timestamp": interval.get("startTime"),
+                "temp": temp_out,
+                "pressure": pressure_out,
+                "wind": {
+                    "speed": wind_speed,
+                    "direction": values.get("windDirection"),
+                    "gust": wind_gust,
+                },
+                "clouds": values.get("cloudCover"),
+                "visibility": vis_out,
+                "humidity": values.get("humidity"),
+            }
+        )
+
+    return _to_forecast_response("tomorrowio", lat, lon, rows)
+
+
+def _transform_visualcrossing_forecast(raw: Dict[str, Any], lat: float, lon: float, units: str, hours: int) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+
+    days = raw.get("days") or []
+    if days:
+        day = days[0]
+        hours_data = day.get("hours")
+        if isinstance(hours_data, list):
+            for h in hours_data:
+                rows.append(
+                    {
+                        "timestamp": h.get("datetime"),
+                        "temp": h.get("temp"),
+                        "pressure": h.get("pressure"),
+                        "wind": {
+                            "speed": h.get("windspeed"),
+                            "direction": h.get("winddir"),
+                            "gust": h.get("windgust"),
+                        },
+                        "clouds": h.get("cloudcover"),
+                        "visibility": h.get("visibility"),
+                        "humidity": h.get("humidity"),
+                    }
+                )
+        elif isinstance(hours_data, dict):
+            times = hours_data.get("datetime") or []
+            for idx in range(len(times)):
+                rows.append(
+                    {
+                        "timestamp": times[idx],
+                        "temp": (hours_data.get("temp") or [None])[idx] if idx < len(hours_data.get("temp") or []) else None,
+                        "pressure": (hours_data.get("pressure") or [None])[idx] if idx < len(hours_data.get("pressure") or []) else None,
+                        "wind": {
+                            "speed": (hours_data.get("windspeed") or [None])[idx] if idx < len(hours_data.get("windspeed") or []) else None,
+                            "direction": (hours_data.get("winddir") or [None])[idx] if idx < len(hours_data.get("winddir") or []) else None,
+                            "gust": (hours_data.get("windgust") or [None])[idx] if idx < len(hours_data.get("windgust") or []) else None,
+                        },
+                        "clouds": (hours_data.get("cloudcover") or [None])[idx] if idx < len(hours_data.get("cloudcover") or []) else None,
+                        "visibility": (hours_data.get("visibility") or [None])[idx] if idx < len(hours_data.get("visibility") or []) else None,
+                        "humidity": (hours_data.get("humidity") or [None])[idx] if idx < len(hours_data.get("humidity") or []) else None,
+                    }
+                )
+
+    rows = rows[:hours]
+    return _to_forecast_response("visualcrossing", lat, lon, rows)
+
+
 def _transform_mock_forecast(lat: float, lon: float, hours: int) -> Dict[str, Any]:
     rows = []
     for i in range(hours):
@@ -547,6 +828,8 @@ def _transform_mock_forecast(lat: float, lon: float, hours: int) -> Dict[str, An
 FORECAST_TRANSFORMERS: Dict[str, Callable[[Dict[str, Any], float, float, str, int], Dict[str, Any]]] = {
     "openmeteo": _transform_openmeteo_forecast,
     "weatherapi": _transform_weatherapi_forecast,
+    "tomorrowio": _transform_tomorrowio_forecast,
+    "visualcrossing": _transform_visualcrossing_forecast,
 }
 
 
@@ -649,4 +932,53 @@ def healthz() -> Dict[str, Any]:
     return {
         "status": "ok",
         "uptime_seconds": int(_now() - _started_at),
+    }
+
+
+def _provider_has_credentials(provider: str) -> bool:
+    provider = provider.lower()
+    if provider not in PROVIDER_KEY_ENV:
+        return True
+    keys = PROVIDER_KEY_ENV[provider]
+    if not keys:
+        return True
+    cfg_name = provider.upper()
+    cfg = _get_provider_config(cfg_name)
+    for key in keys:
+        if os.getenv(key) or _get_config_value(key):
+            return True
+    if isinstance(cfg, dict) and cfg.get("api_key"):
+        return True
+    return False
+
+
+@app.get("/providers")
+def providers_status() -> Dict[str, Any]:
+    providers = []
+    for name in PROVIDERS:
+        lower = name.lower()
+        providers.append(
+            {
+                "name": lower,
+                "enabled": lower in FETCHERS and lower in TRANSFORMERS,
+                "circuit_open": _is_circuit_open(lower),
+                "circuit_open_until": _circuit_open_until.get(lower),
+                "has_credentials": _provider_has_credentials(lower),
+            }
+        )
+    forecast_providers = []
+    for name in FORECAST_PROVIDERS:
+        lower = name.lower()
+        forecast_providers.append(
+            {
+                "name": lower,
+                "enabled": lower == "mock" or (lower in FORECAST_FETCHERS and lower in FORECAST_TRANSFORMERS),
+                "circuit_open": _is_circuit_open(lower),
+                "circuit_open_until": _circuit_open_until.get(lower),
+                "has_credentials": _provider_has_credentials(lower),
+            }
+        )
+    return {
+        "current": providers,
+        "forecast": forecast_providers,
     }
