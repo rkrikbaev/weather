@@ -31,6 +31,7 @@ _cache: Dict[CacheKey, Tuple[float, Dict[str, Any]]] = {}
 _failures: Dict[str, List[float]] = {}
 _circuit_open_until: Dict[str, float] = {}
 _config_cache: Optional[Dict[str, Any]] = None
+_last_errors: Dict[str, Dict[str, Any]] = {}
 
 # -------------------------
 # Helpers
@@ -103,6 +104,7 @@ def _record_failure(provider: str) -> None:
 def _record_success(provider: str) -> None:
     _failures.pop(provider, None)
     _circuit_open_until.pop(provider, None)
+    _last_errors.pop(provider, None)
 
 
 def _cache_get(key: CacheKey) -> Optional[Dict[str, Any]]:
@@ -863,6 +865,10 @@ def get_weather(
             return data
         except Exception as exc:  # noqa: BLE001
             _record_failure(provider)
+            _last_errors[provider] = {
+                "error": str(exc),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
             errors.append({"provider": provider, "error": str(exc)})
             continue
 
@@ -906,6 +912,10 @@ def get_forecast(
             return data
         except Exception as exc:  # noqa: BLE001
             _record_failure(provider)
+            _last_errors[provider] = {
+                "error": str(exc),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
             errors.append({"provider": provider, "error": str(exc)})
             continue
 
@@ -964,6 +974,7 @@ def providers_status() -> Dict[str, Any]:
                 "circuit_open": _is_circuit_open(lower),
                 "circuit_open_until": _circuit_open_until.get(lower),
                 "has_credentials": _provider_has_credentials(lower),
+                "last_error": _last_errors.get(lower),
             }
         )
     forecast_providers = []
@@ -976,6 +987,7 @@ def providers_status() -> Dict[str, Any]:
                 "circuit_open": _is_circuit_open(lower),
                 "circuit_open_until": _circuit_open_until.get(lower),
                 "has_credentials": _provider_has_credentials(lower),
+                "last_error": _last_errors.get(lower),
             }
         )
     return {
