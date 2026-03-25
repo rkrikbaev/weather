@@ -1,0 +1,7 @@
+{
+    "task_output": [[       // predict result
+        1774551600000,      // timestamp in milliseconds
+        17.4,               // predicted value
+        0]],                // meta data (can be null)
+    "confidece": 0          // confidence of the prediction (0-1)
+}
