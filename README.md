@@ -130,7 +130,7 @@ By default, values are normalized to metric. If `units=imperial` is provided, nu
 
 ## NGINX configuration
 
-
+```
 server {
     listen 81 default_server;
     listen [::]:81 default_server;
@@ -147,3 +147,4 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
+```
