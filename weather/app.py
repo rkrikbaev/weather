@@ -14,7 +14,8 @@ _started_at = time.time()
 # -------------------------
 
 CONFIG_PATH = os.getenv("WEATHER_CONFIG_PATH", "config.conf")
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "60"))
+CURRENT_CACHE_TTL_SECONDS = int(os.getenv("CURRENT_CACHE_TTL_SECONDS", "60"))
+FORECAST_CACHE_TTL_SECONDS = int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "3600"))
 FAIL_WINDOW_SECONDS = int(os.getenv("FAIL_WINDOW_SECONDS", "60"))
 FAIL_THRESHOLD = int(os.getenv("FAIL_THRESHOLD", "3"))
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "300"))
@@ -107,12 +108,12 @@ def _record_success(provider: str) -> None:
     _last_errors.pop(provider, None)
 
 
-def _cache_get(key: CacheKey) -> Optional[Dict[str, Any]]:
+def _cache_get(key: CacheKey, ttl_seconds: int) -> Optional[Dict[str, Any]]:
     entry = _cache.get(key)
     if not entry:
         return None
     ts, data = entry
-    if _now() - ts > CACHE_TTL_SECONDS:
+    if _now() - ts > ttl_seconds:
         _cache.pop(key, None)
         return None
     return data
@@ -847,7 +848,7 @@ def get_weather(
     units: str = Query("metric", pattern="^(metric|imperial)$"),
 ):
     key = ("current", lat, lon, units)
-    cached = _cache_get(key)
+    cached = _cache_get(key, CURRENT_CACHE_TTL_SECONDS)
     if cached:
         return cached
 
@@ -889,7 +890,7 @@ def get_forecast(
     units: str = Query("metric", pattern="^(metric|imperial)$"),
 ):
     key = ("forecast", lat, lon, units, hours)
-    cached = _cache_get(key)
+    cached = _cache_get(key, FORECAST_CACHE_TTL_SECONDS)
     if cached:
         return cached
 
