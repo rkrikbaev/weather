@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Weather Data Aggregation & Normalization Service")
 _started_at = time.time()
@@ -24,6 +25,26 @@ DEFAULT_PROVIDERS = ["openweather", "weatherapi", "openmeteo", "tomorrowio", "vi
 PROVIDERS = [p.strip() for p in os.getenv("PROVIDERS", ",".join(DEFAULT_PROVIDERS)).split(",") if p.strip()]
 
 # -------------------------
+# Pydantic Models for Request/Response
+# -------------------------
+
+
+class LocationRequest(BaseModel):
+    lat: float = Field(..., ge=-90, le=90, description="Latitude")
+    lon: float = Field(..., ge=-180, le=180, description="Longitude")
+
+
+class BatchWeatherRequest(BaseModel):
+    locations: List[LocationRequest] = Field(..., description="List of locations")
+    units: str = Field("metric", pattern="^(metric|imperial)$", description="Units (metric or imperial)")
+
+
+class BatchWeatherResponse(BaseModel):
+    results: List[Dict[str, Any]] = Field(..., description="Weather data for each location")
+    errors: List[Dict[str, Any]] = Field(default_factory=list, description="Errors for failed locations")
+
+
+# -------------------------
 # In-memory state
 # -------------------------
 
@@ -33,6 +54,20 @@ _failures: Dict[str, List[float]] = {}
 _circuit_open_until: Dict[str, float] = {}
 _config_cache: Optional[Dict[str, Any]] = None
 _last_errors: Dict[str, Dict[str, Any]] = {}
+
+# Performance metrics
+_metrics: Dict[str, Dict[str, Any]] = {
+    "requests": {
+        "total": 0,
+        "by_provider": {},
+        "response_times": {},
+    },
+    "cache": {
+        "hits": 0,
+        "misses": 0,
+        "size": 0,
+    },
+}
 
 # -------------------------
 # Helpers
@@ -111,16 +146,40 @@ def _record_success(provider: str) -> None:
 def _cache_get(key: CacheKey, ttl_seconds: int) -> Optional[Dict[str, Any]]:
     entry = _cache.get(key)
     if not entry:
+        _metrics["cache"]["misses"] += 1
         return None
     ts, data = entry
     if _now() - ts > ttl_seconds:
         _cache.pop(key, None)
+        _metrics["cache"]["misses"] += 1
         return None
+    _metrics["cache"]["hits"] += 1
     return data
 
 
 def _cache_set(key: CacheKey, data: Dict[str, Any]) -> None:
     _cache[key] = (_now(), data)
+    _metrics["cache"]["size"] = len(_cache)
+
+
+def _record_metric(provider: str, response_time: float) -> None:
+    """Record performance metrics for a provider."""
+    _metrics["requests"]["total"] += 1
+    if provider not in _metrics["requests"]["by_provider"]:
+        _metrics["requests"]["by_provider"][provider] = {
+            "count": 0,
+            "avg_response_time": 0.0,
+            "min_response_time": float("inf"),
+            "max_response_time": 0.0,
+        }
+    prov_metrics = _metrics["requests"]["by_provider"][provider]
+    prov_metrics["count"] += 1
+    # Update average response time
+    prov_metrics["avg_response_time"] = (
+        (prov_metrics["avg_response_time"] * (prov_metrics["count"] - 1) + response_time) / prov_metrics["count"]
+    )
+    prov_metrics["min_response_time"] = min(prov_metrics["min_response_time"], response_time)
+    prov_metrics["max_response_time"] = max(prov_metrics["max_response_time"], response_time)
 
 
 # -------------------------
@@ -188,8 +247,8 @@ def _fetch_openmeteo(lat: float, lon: float, units: str) -> Dict[str, Any]:
     params = {
         "latitude": lat,
         "longitude": lon,
-        "current": "temperature_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
-        "hourly": "relative_humidity_2m,visibility,precipitation_probability,cloud_cover,uv_index",
+        "current": "temperature_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,shortwave_radiation",
+        "hourly": "relative_humidity_2m,visibility,precipitation_probability,cloud_cover,uv_index,shortwave_radiation",
         "forecast_days": 1,
     }
     resp = requests.get(base_url, params=params, timeout=10)
@@ -258,7 +317,7 @@ def _fetch_openmeteo_forecast(lat: float, lon: float, units: str, hours: int) ->
         "longitude": lon,
         "hourly": (
             "temperature_2m,relative_humidity_2m,visibility,cloud_cover,wind_speed_10m,"
-            "wind_direction_10m,wind_gusts_10m,surface_pressure"
+            "wind_direction_10m,wind_gusts_10m,surface_pressure,shortwave_radiation"
         ),
         "forecast_hours": hours,
     }
@@ -349,6 +408,9 @@ def _fetch_mock(lat: float, lon: float, units: str) -> Dict[str, Any]:
             "feels_like_c": 19.0,
             "condition": {"text": "Partly cloudy", "icon_url": ""},
             "wind": {"speed_kph": 10.0, "direction": 180, "gust_kph": 15.0},
+            "pressure": 1013.0,
+            "humidity": 65.0,
+            "light_intensity": 75000.0,
         },
         "risk_factors": {"uv_index": 4, "precip_prob": 0.1, "thunderstorm_prob": None},
     }
@@ -359,7 +421,13 @@ def _fetch_mock(lat: float, lon: float, units: str) -> Dict[str, Any]:
 # -------------------------
 
 
-def _to_cws(metadata_source: str, lat: float, lon: float, current: Dict[str, Any], risk: Dict[str, Any]) -> Dict[str, Any]:
+def _to_cws(
+    metadata_source: str, lat: float, lon: float, current: Dict[str, Any], risk: Dict[str, Any]
+) -> Dict[str, Any]:
+    # Ensure required fields are always present in 'current'
+    for key in ["pressure", "humidity", "light_intensity"]:
+        if key not in current:
+            current[key] = None
     return {
         "metadata": {
             "source": metadata_source,
@@ -399,6 +467,9 @@ def _transform_openweather(raw: Dict[str, Any], lat: float, lon: float, units: s
             "direction": wind.get("deg"),
             "gust_kph": gust_out,
         },
+        "pressure": main.get("pressure"),  # hPa
+        "humidity": main.get("humidity"),  # percentage
+        "light_intensity": None,  # OpenWeather doesn't provide this
     }
     risk = {
         "uv_index": None,
@@ -435,6 +506,9 @@ def _transform_weatherapi(raw: Dict[str, Any], lat: float, lon: float, units: st
             "direction": current_raw.get("wind_degree"),
             "gust_kph": gust_out,
         },
+        "pressure": current_raw.get("pressure_mb"),  # mb
+        "humidity": current_raw.get("humidity"),  # percentage
+        "light_intensity": None,  # WeatherAPI doesn't provide this
     }
     risk = {
         "uv_index": current_raw.get("uv"),
@@ -468,16 +542,25 @@ def _transform_openmeteo(raw: Dict[str, Any], lat: float, lon: float, units: str
         if wind_gust_kph is not None:
             wind_gust_kph = wind_gust_kph / 1.60934
 
-    # Use first hourly values for risk factors
+    # Use first hourly values for risk factors and additional metrics
     precip_prob = None
     uv_index = None
+    humidity = None
+    light_intensity = None
     if hourly:
         pp = hourly.get("precipitation_probability")
         uv = hourly.get("uv_index")
+        hum = hourly.get("relative_humidity_2m")
+        rad = hourly.get("shortwave_radiation")  # W/m² (Watt per square meter)
         if isinstance(pp, list) and pp:
             precip_prob = pp[0] / 100.0
         if isinstance(uv, list) and uv:
             uv_index = uv[0]
+        if isinstance(hum, list) and hum:
+            humidity = hum[0]
+        if isinstance(rad, list) and rad and rad[0] is not None:
+            # Convert W/m² to lux: 1 W/m² ≈ 120 lux
+            light_intensity = rad[0] * 120
 
     current = {
         "temp_c": temp_out,
@@ -488,6 +571,9 @@ def _transform_openmeteo(raw: Dict[str, Any], lat: float, lon: float, units: str
             "direction": current_raw.get("wind_direction_10m"),
             "gust_kph": wind_gust_kph,
         },
+        "pressure": current_raw.get("surface_pressure"),  # hPa
+        "humidity": humidity,  # percentage
+        "light_intensity": light_intensity,  # lux (converted from shortwave_radiation)
     }
     risk = {
         "uv_index": uv_index,
@@ -529,6 +615,9 @@ def _transform_tomorrowio(raw: Dict[str, Any], lat: float, lon: float, units: st
             "direction": values.get("windDirection"),
             "gust_kph": wind_gust,
         },
+        "pressure": values.get("pressureSurfaceLevel"),  # mb
+        "humidity": values.get("humidity"),  # percentage
+        "light_intensity": None,  # Tomorrow.io doesn't provide this
     }
     risk = {
         "uv_index": values.get("uvIndex"),
@@ -552,6 +641,9 @@ def _transform_visualcrossing(raw: Dict[str, Any], lat: float, lon: float, units
             "direction": current_raw.get("winddir"),
             "gust_kph": current_raw.get("windgust"),
         },
+        "pressure": current_raw.get("pressure"),  # mb/hPa
+        "humidity": current_raw.get("humidity"),  # percentage
+        "light_intensity": None,  # VisualCrossing doesn't provide this
     }
     risk = {
         "uv_index": current_raw.get("uvindex"),
@@ -594,7 +686,7 @@ PROVIDER_KEY_ENV: Dict[str, List[str]] = {
 
 FORECAST_PROVIDERS = [
     p.strip()
-    for p in os.getenv("FORECAST_PROVIDERS", "openmeteo,weatherapi,tomorrowio,visualcrossing,mock").split(",")
+    for p in os.getenv("FORECAST_PROVIDERS", "weatherapi,openmeteo,tomorrowio,visualcrossing,mock").split(",")
     if p.strip()
 ]
 
@@ -629,6 +721,7 @@ def _transform_openmeteo_forecast(raw: Dict[str, Any], lat: float, lon: float, u
     wind_dir = hourly.get("wind_direction_10m") or []
     wind_gust = hourly.get("wind_gusts_10m") or []
     pressure = hourly.get("surface_pressure") or []
+    radiation = hourly.get("shortwave_radiation") or []  # W/m²
 
     rows: List[Dict[str, Any]] = []
     count = min(hours, len(times))
@@ -638,6 +731,10 @@ def _transform_openmeteo_forecast(raw: Dict[str, Any], lat: float, lon: float, u
         wind_speed_out = wind_speed[idx] if idx < len(wind_speed) else None
         wind_gust_out = wind_gust[idx] if idx < len(wind_gust) else None
         pressure_out = pressure[idx] if idx < len(pressure) else None
+        light_intensity = None
+        if idx < len(radiation) and radiation[idx] is not None:
+            # Convert W/m² to lux: 1 W/m² ≈ 120 lux
+            light_intensity = radiation[idx] * 120
 
         if units == "imperial":
             if temp_out is not None:
@@ -664,6 +761,7 @@ def _transform_openmeteo_forecast(raw: Dict[str, Any], lat: float, lon: float, u
                 "clouds": clouds[idx] if idx < len(clouds) else None,
                 "visibility": vis_out,
                 "humidity": humidity[idx] if idx < len(humidity) else None,
+                "light_intensity": light_intensity,  # lux (converted from shortwave_radiation)
             }
         )
 
@@ -704,6 +802,7 @@ def _transform_weatherapi_forecast(raw: Dict[str, Any], lat: float, lon: float, 
                 "clouds": h.get("cloud"),
                 "visibility": visibility_out,
                 "humidity": h.get("humidity"),
+                "light_intensity": None,  # Not provided by WeatherAPI
             }
         )
 
@@ -758,6 +857,7 @@ def _transform_tomorrowio_forecast(raw: Dict[str, Any], lat: float, lon: float, 
                 "clouds": values.get("cloudCover"),
                 "visibility": vis_out,
                 "humidity": values.get("humidity"),
+                "light_intensity": None,  # Not provided by Tomorrow.io
             }
         )
 
@@ -786,6 +886,7 @@ def _transform_visualcrossing_forecast(raw: Dict[str, Any], lat: float, lon: flo
                         "clouds": h.get("cloudcover"),
                         "visibility": h.get("visibility"),
                         "humidity": h.get("humidity"),
+                        "light_intensity": None,  # Not provided by VisualCrossing
                     }
                 )
         elif isinstance(hours_data, dict):
@@ -823,6 +924,7 @@ def _transform_mock_forecast(lat: float, lon: float, hours: int) -> Dict[str, An
                 "clouds": 40,
                 "visibility": 10.0,
                 "humidity": 55,
+                "light_intensity": 75000.0,
             }
         )
     return _to_forecast_response("mock", lat, lon, rows)
@@ -859,8 +961,11 @@ def get_weather(
         if _is_circuit_open(provider):
             continue
         try:
+            start_time = _now()
             raw = FETCHERS[provider](lat, lon, units)
             data = TRANSFORMERS[provider](raw, lat, lon, units)
+            response_time = _now() - start_time
+            _record_metric(provider, response_time)
             _record_success(provider)
             _cache_set(key, data)
             return data
@@ -899,6 +1004,7 @@ def get_forecast(
         if _is_circuit_open(provider):
             continue
         try:
+            start_time = _now()
             if provider == "mock":
                 data = _transform_mock_forecast(lat, lon, hours)
             else:
@@ -908,6 +1014,8 @@ def get_forecast(
                     continue
                 raw = fetcher(lat, lon, units, hours)
                 data = transformer(raw, lat, lon, units, hours)
+            response_time = _now() - start_time
+            _record_metric(provider, response_time)
             _record_success(provider)
             _cache_set(key, data)
             return data
@@ -995,3 +1103,135 @@ def providers_status() -> Dict[str, Any]:
         "current": providers,
         "forecast": forecast_providers,
     }
+
+
+# -------------------------
+# New endpoints
+# -------------------------
+
+
+@app.post("/weather/batch")
+def get_batch_weather(request: BatchWeatherRequest) -> BatchWeatherResponse:
+    """Get weather for multiple locations in a single request."""
+    results = []
+    errors = []
+
+    for location in request.locations:
+        try:
+            weather = get_weather(location.lat, location.lon, request.units)
+            results.append({
+                "lat": location.lat,
+                "lon": location.lon,
+                "weather": weather,
+            })
+        except HTTPException as exc:
+            errors.append({
+                "lat": location.lat,
+                "lon": location.lon,
+                "error": str(exc.detail),
+            })
+        except Exception as exc:  # noqa: BLE001
+            errors.append({
+                "lat": location.lat,
+                "lon": location.lon,
+                "error": str(exc),
+            })
+
+    return BatchWeatherResponse(results=results, errors=errors)
+
+
+@app.get("/metrics")
+def get_metrics() -> Dict[str, Any]:
+    """Get performance and cache metrics."""
+    return {
+        "metrics": _metrics,
+        "cache_size": len(_cache),
+        "active_circuits": list(_circuit_open_until.keys()),
+    }
+
+
+@app.delete("/cache")
+def clear_cache() -> Dict[str, str]:
+    """Clear the entire cache."""
+    global _cache  # noqa: PLW0603
+    _cache.clear()
+    _metrics["cache"]["size"] = 0
+    return {"message": "Cache cleared successfully"}
+
+
+@app.delete("/cache/metrics")
+def reset_metrics() -> Dict[str, str]:
+    """Reset performance metrics."""
+    global _metrics  # noqa: PLW0603
+    _metrics = {
+        "requests": {
+            "total": 0,
+            "by_provider": {},
+            "response_times": {},
+        },
+        "cache": {
+            "hits": 0,
+            "misses": 0,
+            "size": len(_cache),
+        },
+    }
+    return {"message": "Metrics reset successfully"}
+
+
+@app.get("/cache/stats")
+def get_cache_stats() -> Dict[str, Any]:
+    """Get cache statistics."""
+    return {
+        "size": len(_cache),
+        "hits": _metrics["cache"]["hits"],
+        "misses": _metrics["cache"]["misses"],
+        "hit_rate": (
+            _metrics["cache"]["hits"] / (_metrics["cache"]["hits"] + _metrics["cache"]["misses"])
+            if (_metrics["cache"]["hits"] + _metrics["cache"]["misses"]) > 0
+            else 0
+        ),
+        "entries": [
+            {
+                "key": str(k),
+                "age_seconds": int(_now() - v[0]),
+            }
+            for k, v in list(_cache.items())[:100]  # Limit to first 100 entries
+        ],
+    }
+
+
+@app.get("/info")
+def get_info() -> Dict[str, Any]:
+    """Get service information."""
+    return {
+        "service": "Weather Data Aggregation & Normalization Service",
+        "version": "2.0",
+        "uptime_seconds": int(_now() - _started_at),
+        "providers": {
+            "current": PROVIDERS,
+            "forecast": FORECAST_PROVIDERS,
+        },
+        "configuration": {
+            "current_cache_ttl_seconds": CURRENT_CACHE_TTL_SECONDS,
+            "forecast_cache_ttl_seconds": FORECAST_CACHE_TTL_SECONDS,
+            "fail_window_seconds": FAIL_WINDOW_SECONDS,
+            "fail_threshold": FAIL_THRESHOLD,
+            "cooldown_seconds": COOLDOWN_SECONDS,
+        },
+    }
+
+
+@app.post("/circuit-breaker/reset")
+def reset_circuit_breaker(provider: Optional[str] = Query(None, description="Provider to reset (all if omitted)")) -> Dict[str, Any]:
+    """Reset circuit breaker for a provider or all providers."""
+    global _circuit_open_until, _failures  # noqa: PLW0603
+    
+    if provider:
+        provider = provider.lower()
+        _circuit_open_until.pop(provider, None)
+        _failures.pop(provider, None)
+        return {"message": f"Circuit breaker reset for {provider}"}
+    else:
+        _circuit_open_until.clear()
+        _failures.clear()
+        return {"message": "Circuit breaker reset for all providers"}

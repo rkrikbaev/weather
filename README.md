@@ -108,7 +108,8 @@ By default, values are normalized to metric. If `units=imperial` is provided, nu
       "wind": { "speed": 0.0, "direction": 0, "gust": 0.0 },
       "clouds": 0,
       "visibility": 0.0,
-      "humidity": 0
+      "humidity": 0,
+      "light_intensity": 75000.0
     }
   ]
 }
@@ -121,12 +122,45 @@ By default, values are normalized to metric. If `units=imperial` is provided, nu
     "temp_c": 0.0,
     "feels_like_c": 0.0,
     "condition": { "text": "string", "icon_url": "string" },
-    "wind": { "speed_kph": 0.0, "direction": "degrees", "gust_kph": 0.0 }
+    "wind": { "speed_kph": 0.0, "direction": "degrees", "gust_kph": 0.0 },
+    "pressure": 1013.0,
+    "humidity": 65.0,
+    "light_intensity": 75000.0
   },
   "risk_factors": { "uv_index": 0, "precip_prob": 0.0, "thunderstorm_prob": 0.0 }
 }
 ```
 
+## Response Field Descriptions
+
+### Current Weather Fields
+
+- **temp_c**: Current temperature in Celsius (metric) or Fahrenheit (imperial)
+- **feels_like_c**: "Feels like" temperature in Celsius (metric) or Fahrenheit (imperial)
+- **condition**: Weather condition object with `text` (description) and `icon_url` (provider-specific icon)
+- **wind**: Wind object with:
+  - `speed_kph`: Wind speed in km/h (metric) or mph (imperial)
+  - `direction`: Wind direction in degrees (0-360)
+  - `gust_kph`: Wind gust in km/h (metric) or mph (imperial)
+- **pressure**: Atmospheric pressure in hPa/mb (nullable - not all providers supply this)
+- **humidity**: Relative humidity as a percentage (nullable - not all providers supply this)
+- **light_intensity**: Light intensity in lux (nullable - limited provider support)
+
+### Risk Factors
+
+- **uv_index**: UV index value (nullable)
+- **precip_prob**: Precipitation probability as a decimal (0.0-1.0) or percentage (nullable)
+- **thunderstorm_prob**: Thunderstorm probability as a decimal (0.0-1.0) or percentage (nullable)
+
+### Forecast Fields
+
+Forecast responses include the same current weather fields plus:
+- **timestamp**: ISO 8601 datetime for the forecast period
+- **temp**: Forecasted temperature
+- **pressure**: Forecasted atmospheric pressure
+- **clouds**: Cloud coverage percentage (0-100)
+- **visibility**: Visibility in km
+- **light_intensity**: Forecasted light intensity in lux
 
 
 ## NGINX configuration
